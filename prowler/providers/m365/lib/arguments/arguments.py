@@ -28,6 +28,11 @@ def init_parser(self):
         action="store_true",
         help="Use Azure interactive browser authentication to log in against Microsoft 365",
     )
+    m365_auth_modes_group.add_argument(
+        "--cert-auth",
+        action="store_true",
+        help="Use certificate-based authentication to log in against Microsoft 365. Requires environment variables: AZURE_TENANT_ID, AZURE_APP_ID, M365_DOMAIN, M365_CERT_PATH, M365_CERT_PASSWORD, M365_CERT_THUMBPRINT",
+    )
     m365_parser.add_argument(
         "--tenant-id",
         nargs="?",

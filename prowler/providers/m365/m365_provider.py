@@ -6,6 +6,7 @@ from uuid import UUID
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.identity import (
+    CertificateCredential,
     ClientSecretCredential,
     CredentialUnavailableError,
     DefaultAzureCredential,
@@ -28,6 +29,7 @@ from prowler.providers.m365.exceptions.exceptions import (
     M365ArgumentTypeValidationError,
     M365BrowserAuthNoFlagError,
     M365BrowserAuthNoTenantIDError,
+    M365CertificateCredentialError,
     M365ClientAuthenticationError,
     M365ClientIdAndClientSecretNotBelongingToTenantIdError,
     M365ConfigCredentialsError,
@@ -113,6 +115,7 @@ class M365Provider(Provider):
         env_auth: bool = False,
         az_cli_auth: bool = False,
         browser_auth: bool = False,
+        cert_auth: bool = False,
         tenant_id: str = None,
         client_id: str = None,
         client_secret: str = None,
@@ -160,6 +163,7 @@ class M365Provider(Provider):
             sp_env_auth,
             env_auth,
             browser_auth,
+            cert_auth,
             tenant_id,
             client_id,
             client_secret,
@@ -187,6 +191,7 @@ class M365Provider(Provider):
             sp_env_auth,
             env_auth,
             browser_auth,
+            cert_auth,
             tenant_id,
             m365_credentials,
             self._region_config,
@@ -278,6 +283,7 @@ class M365Provider(Provider):
         sp_env_auth: bool,
         env_auth: bool,
         browser_auth: bool,
+        cert_auth: bool,
         tenant_id: str,
         client_id: str,
         client_secret: str,
@@ -292,6 +298,7 @@ class M365Provider(Provider):
             sp_env_auth (bool): Flag indicating whether application authentication with environment variables is enabled.
             env_auth: (bool): Flag indicating whether to use application and PowerShell authentication with environment variables.
             browser_auth (bool): Flag indicating whether browser authentication is enabled.
+            cert_auth (bool): Flag indicating whether certificate authentication is enabled.
             tenant_id (str): The M365 Tenant ID.
             client_id (str): The M365 Client ID.
             client_secret (str): The M365 Client Secret.
@@ -303,7 +310,7 @@ class M365Provider(Provider):
         """
 
         if not client_id and not client_secret:
-            if not browser_auth and tenant_id and not env_auth:
+            if not browser_auth and tenant_id and not env_auth and not cert_auth:
                 raise M365BrowserAuthNoFlagError(
                     file=os.path.basename(__file__),
                     message="M365 tenant ID error: browser authentication flag (--browser-auth) not found",
@@ -313,10 +320,11 @@ class M365Provider(Provider):
                 and not sp_env_auth
                 and not browser_auth
                 and not env_auth
+                and not cert_auth
             ):
                 raise M365NoAuthenticationMethodError(
                     file=os.path.basename(__file__),
-                    message="M365 provider requires at least one authentication method set: [--env-auth | --az-cli-auth | --sp-env-auth | --browser-auth]",
+                    message="M365 provider requires at least one authentication method set: [--env-auth | --az-cli-auth | --sp-env-auth | --browser-auth | --cert-auth]",
                 )
             elif browser_auth and not tenant_id:
                 raise M365BrowserAuthNoTenantIDError(
@@ -476,6 +484,7 @@ class M365Provider(Provider):
         sp_env_auth: bool,
         env_auth: bool,
         browser_auth: bool,
+        cert_auth: bool,
         tenant_id: str,
         m365_credentials: dict,
         region_config: M365RegionConfig,
@@ -488,6 +497,7 @@ class M365Provider(Provider):
             az_cli_auth (bool): Flag indicating whether to use Azure CLI authentication.
             sp_env_auth (bool): Flag indicating whether to use application authentication with environment variables.
             browser_auth (bool): Flag indicating whether to use interactive browser authentication.
+            cert_auth (bool): Flag indicating whether to use certificate authentication.
             tenant_id (str): The M365 Active Directory tenant ID.
             m365_credentials (dict): The M365 configuration object. It contains the following keys:
                 - tenant_id: The M365 Active Directory tenant ID.
@@ -505,7 +515,38 @@ class M365Provider(Provider):
             Exception: If failed to retrieve M365 credentials.
 
         """
-        if not browser_auth:
+        if cert_auth:
+            try:
+                M365Provider.check_certificate_auth_env_vars()
+
+                # Get certificate path, password and thumbprint from environment variables
+                cert_path = getenv("M365_CERT_PATH")
+                cert_password = getenv("M365_CERT_PASSWORD")
+                cert_thumbprint = getenv("M365_CERT_THUMBPRINT")
+
+                # Create certificate credential
+                credentials = CertificateCredential(
+                    tenant_id=getenv("AZURE_TENANT_ID"),
+                    client_id=getenv("AZURE_APP_ID"),
+                    certificate_path=cert_path,
+                    password=cert_password,
+                    authority=region_config.authority,
+                    certificate_thumbprint=cert_thumbprint,
+                )
+                return credentials
+
+            except Exception as error:
+                logger.critical(
+                    "Failed to retrieve M365 credentials using certificate authentication"
+                )
+                logger.critical(
+                    f"{error.__class__.__name__}[{error.__traceback__.tb_lineno}] -- {error}"
+                )
+                raise M365CertificateCredentialError(
+                    file=os.path.basename(__file__),
+                    original_exception=error,
+                )
+        elif not browser_auth:
             if sp_env_auth or env_auth:
                 try:
                     M365Provider.check_service_principal_creds_env_vars()
@@ -1132,3 +1173,38 @@ class M365Provider(Provider):
         except Exception as error:
             # Generic exception handling for unexpected errors
             raise RuntimeError(f"An unexpected error occurred: {str(error)}")
+
+    @staticmethod
+    def check_certificate_auth_env_vars():
+        """
+        Checks the presence of required environment variables for certificate authentication.
+
+        This method checks for the presence of the following environment variables:
+        - AZURE_TENANT_ID: Azure tenant ID
+        - AZURE_APP_ID: Azure application ID
+        - M365_DOMAIN: Microsoft 365 domain
+        - M365_CERT_PATH: Path to the certificate file
+        - M365_CERT_PASSWORD: Password for the certificate
+        - M365_CERT_THUMBPRINT: Thumbprint of the certificate
+
+        If any of the environment variables is missing, it logs a critical error and raises an exception.
+        """
+        logger.info(
+            "M365 provider: checking certificate authentication environment variables ..."
+        )
+        for env_var in [
+            "AZURE_TENANT_ID",
+            "AZURE_APP_ID",
+            "M365_DOMAIN",
+            "M365_CERT_PATH",
+            "M365_CERT_PASSWORD",
+            "M365_CERT_THUMBPRINT",
+        ]:
+            if not getenv(env_var):
+                logger.critical(
+                    f"M365 provider: Missing environment variable {env_var} needed for certificate authentication."
+                )
+                raise M365EnvironmentVariableError(
+                    file=os.path.basename(__file__),
+                    message=f"Missing environment variable {env_var} required for certificate authentication.",
+                )

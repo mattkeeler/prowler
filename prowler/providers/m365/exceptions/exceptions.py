@@ -324,3 +324,17 @@ class M365UserNotBelongingToTenantError(M365CredentialsError):
         super().__init__(
             6026, file=file, original_exception=original_exception, message=message
         )
+
+
+class M365CertificateCredentialError(Exception):
+    """Exception raised when there is an error with certificate authentication."""
+
+    def __init__(self, file: str, original_exception: Exception = None):
+        self.file = file
+        self.original_exception = original_exception
+        self.message = (
+            "Failed to retrieve M365 credentials using certificate authentication"
+        )
+        if original_exception:
+            self.message += f": {original_exception}"
+        super().__init__(self.message)
